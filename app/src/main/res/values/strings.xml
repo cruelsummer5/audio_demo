@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">RecordDemo</string>
+    <string name="startAudio">"开始录音"</string>
+    <string name="stopAudio">"停止录音"</string>
+    <string name="playAudio">"播放音频"</string>
+    <string name="deleteAudio">"删除音频"</string>
+    <string name="init_audio">"初始化完成..."</string>
+</resources>

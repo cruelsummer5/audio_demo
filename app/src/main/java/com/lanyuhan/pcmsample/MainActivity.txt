@@ -1,0 +1,351 @@
+package com.lanyuhan.pcmsample;
+
+import android.Manifest;
+import android.annotation.SuppressLint;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioRecord;
+import android.media.AudioTrack;
+import android.media.MediaRecorder;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.FileUtils;
+import android.util.Log;
+import android.view.View;
+import android.widget.Button;
+import android.widget.ScrollView;
+import android.widget.TextView;
+
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+
+public class MainActivity extends AppCompatActivity implements View.OnClickListener {
+    public static final String TAG = "PCMSample";
+
+    //是否在录制
+    private boolean mWhetherRecord = false;
+    //开始录音
+    private Button startAudio;
+    //结束录音
+    private Button stopAudio;
+    //播放录音
+    private Button playAudio;
+
+    //屏幕输入打印信息
+    private ScrollView mScrollView;
+    private TextView tv_audio_succeess;
+
+    //pcm文件
+    private File file;
+    //录音对象
+    private AudioRecord mAudioRecord;
+    //播放PCM对象
+    private AudioTrack audioTrack = null;
+    //最小缓冲池
+    private  int minBufferSize = 0;
+    //采样率
+    private static final int SAMPLE_RATE_INHZ = 44100;
+    //音频格式
+    private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
+
+    //动态权限申请
+    private String[] permissionRequest = new String[]{
+            Manifest.permission.RECORD_AUDIO
+    };
+    private boolean isNeedRequestPermission = false;
+    private static final int REQUEST_PERMISSION = 1;
+    private static  int isFIRST = 0;
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+        checkAndRequestPermissions();
+        initView();
+
+        Intent intent = new Intent(Intent.ACTION_MAIN);
+//        if(isFIRST == 0){
+//            isFIRST = 1;
+//            /**知道要跳转应用的包命与目标Activity*/
+//            ComponentName componentName = new ComponentName("com.yuhan.demo.splitscreen", "com.yuhan.demo.splitscreen.MainActivity");
+//            intent.setComponent(componentName);
+//            intent.putExtra("", "");//这里Intent传值
+//            startActivity(intent);
+//        }
+    }
+
+    //初始化View
+    private void initView() {
+        mScrollView = (ScrollView) findViewById(R.id.mScrollView);
+        tv_audio_succeess = (TextView) findViewById(R.id.tv_audio_succeess);
+        printLog("初始化成功");
+        //开始录音
+        startAudio = (Button) findViewById(R.id.startAudio);
+        startAudio.setOnClickListener(this);
+        //停止录音
+        stopAudio = (Button) findViewById(R.id.stopAudio);
+        stopAudio.setOnClickListener(this);
+        //播放文件
+        playAudio = (Button) findViewById(R.id.playAudio);
+        playAudio.setOnClickListener(this);
+        //删除文件
+        Button deleteAudio = (Button) findViewById(R.id.deleteAudio);
+        deleteAudio.setOnClickListener(this);
+    }
+
+    //点击事件
+    @SuppressLint("NonConstantResourceId")
+    @Override
+    public void onClick(View v) {
+        switch (v.getId()) {
+            case R.id.startAudio:
+                StartRecord();
+                if(mAudioRecord == null){
+                    return;
+                }
+                printLog("开始录音");
+                ButtonEnabled(false, true, false);
+                break;
+            case R.id.stopAudio:
+                mWhetherRecord = false;
+                ButtonEnabled(true, false, true);
+                printLog("停止录音");
+                break;
+            case R.id.playAudio:
+                PlayRecord();
+                ButtonEnabled(true, false, false);
+                printLog("播放录音");
+                break;
+            case R.id.deleteAudio:
+                deleFile();
+                break;
+        }
+    }
+
+    //屏幕上打印log
+    private void printLog(final String resultString) {
+        tv_audio_succeess.post(() -> {
+            tv_audio_succeess.append(resultString + "\n");
+            mScrollView.fullScroll(ScrollView.FOCUS_DOWN);
+        });
+    }
+
+    //按钮获取/失去焦点
+    private void ButtonEnabled(boolean start, boolean stop, boolean play) {
+        startAudio.setEnabled(start);
+        stopAudio.setEnabled(stop);
+        playAudio.setEnabled(play);
+    }
+
+    //开始录音
+    private void StartRecord() {
+        initAudioRecord();
+        file = new File(this.getExternalCacheDir().getPath(), "PCMSample.pcm");
+        Log.i(TAG, "开始录制，保存路径：" + this.getExternalCacheDir().getPath());
+        //如果存在历史PCM文件，则先删除再创建
+        if (file.exists())
+            file.delete();
+        Log.i(TAG,"存在历史PCM文件，先删除");
+        try {
+            file.createNewFile();
+            Log.i(TAG,"创建文件");
+        } catch (IOException e) {
+            Log.e(TAG,"未能创建");
+            throw new IllegalStateException("未能创建" + file.toString());
+        }
+        if(mAudioRecord == null){
+            Log.e(TAG, "AudioRecord对象空指针，录音失败");
+            printLog("AudioRecord对象创建失败，无法录音");
+            return;
+        }
+
+        //正常录制音频代码
+        mWhetherRecord = true;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                //开始录制音频PCM原始数据
+                mAudioRecord.startRecording();
+                FileOutputStream fileOutputStream = null;
+                try {
+                    fileOutputStream = new FileOutputStream(file);
+                    byte[] bytes = new byte[minBufferSize];
+                    while (mWhetherRecord) {
+                        //读取流
+                        mAudioRecord.read(bytes, 0, bytes.length);
+                        fileOutputStream.write(bytes);
+                        fileOutputStream.flush();
+                    }
+                    Log.i(TAG, "停止录音");
+                    //停止录音
+                    mAudioRecord.stop();
+                    mAudioRecord.release();
+                    mAudioRecord = null;
+                    fileOutputStream.flush();
+                    fileOutputStream.close();
+                } catch (FileNotFoundException e) {
+                    e.printStackTrace();
+                    mAudioRecord.stop();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                } catch (Throwable t) {
+                Log.e(TAG, "录音失败");
+                printLog("录音失败");
+            }
+            }
+        }).start();
+    }
+
+    //动态权限申请
+    public void checkAndRequestPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            for (String permissionStr : permissionRequest) {
+                if (ActivityCompat.checkSelfPermission(this, permissionStr) != PackageManager.PERMISSION_GRANTED) {
+                    isNeedRequestPermission = true;
+                    Log.e(TAG, "checkSelfPermission err: ");
+                    break;
+                } else {
+                    isNeedRequestPermission = false;
+                    Log.i(TAG, "checkSelfPermission successful: ");
+                }
+            }
+            if (isNeedRequestPermission) {
+                requestPermissions(permissionRequest, REQUEST_PERMISSION);
+            } else {
+                //do what you want
+            }
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        for (int index = 0; index < grantResults.length; index++) {
+            if (PackageManager.PERMISSION_DENIED == grantResults[index]) {
+                finish();
+                return;
+            }
+        }
+        //do what you want
+    }
+
+    private void initAudioRecord() {
+        //checkAndRequestPermissions();
+        int channelConfig = AudioFormat.CHANNEL_IN_STEREO;
+        minBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE_INHZ, channelConfig, AUDIO_FORMAT);
+        Log.i(TAG, "initAudioRecord: minBufferSize = " + minBufferSize);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            mAudioRecord = new AudioRecord.Builder()
+                    //录音模式为：MIC、VOICE_COMMUNICATION等
+                    .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                    .setAudioFormat(new AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(SAMPLE_RATE_INHZ)
+                            .setChannelMask(channelConfig)
+                            //.setChannelIndexMask(channelConfig)//不能使用
+                            .build())
+                    .setBufferSizeInBytes(minBufferSize * 2) //minBufferSize
+                    .build();
+        }else{
+            mAudioRecord = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, SAMPLE_RATE_INHZ, channelConfig, AUDIO_FORMAT, minBufferSize * 2);
+        }
+    }
+
+    //播放音频PCM文件
+    public void PlayRecord() {
+        if(file == null){
+            return;
+        }
+        audioTrack = createAudioTrackTo();
+        audioTrack.play();
+        try {
+            //读取文件
+            InputStream fileInputStream = new FileInputStream(file);
+            final DataInputStream dataInputStream = new DataInputStream(new BufferedInputStream(fileInputStream));
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    try {
+                        byte[] tempBuffer = new byte[minBufferSize];
+                        while (dataInputStream.available() > 0) {
+                            int readCount = dataInputStream.read(tempBuffer);
+                            if (readCount == AudioTrack.ERROR_INVALID_OPERATION ||
+                                    readCount == AudioTrack.ERROR_BAD_VALUE) {
+                                continue;
+                            }
+                            if (readCount != 0 && readCount != -1) {
+                                audioTrack.write(tempBuffer, 0, readCount);
+                            }
+                        }
+                        audioTrack.release();
+                        audioTrack = null;
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }finally {
+                        try {
+                            if (dataInputStream!=null){
+                                dataInputStream.close();
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            }).start();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        private AudioTrack createAudioTrackTo() throws IllegalStateException{
+        int mBufferSizeInBytes = AudioTrack.getMinBufferSize(SAMPLE_RATE_INHZ, AudioFormat.CHANNEL_OUT_STEREO, AUDIO_FORMAT);
+            Log.i(TAG, "initAudioRecord: mBufferSizeInBytes = " + mBufferSizeInBytes);
+        if (mBufferSizeInBytes <= 0) {
+            throw new IllegalStateException("AudioTrack is not available " + mBufferSizeInBytes);
+        }
+        AudioTrack mAudioTrack;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            mAudioTrack = new AudioTrack.Builder()
+                    .setAudioAttributes(new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .setLegacyStreamType(AudioManager.STREAM_MUSIC)
+                            .build())
+                    .setAudioFormat(new AudioFormat.Builder()
+                            .setEncoding(AUDIO_FORMAT)
+                            .setSampleRate(SAMPLE_RATE_INHZ)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            //.setChannelIndexMask(AudioFormat.CHANNEL_OUT_MONO)//不能使用
+                            .build())
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setBufferSizeInBytes(mBufferSizeInBytes)
+                    .build();
+        } else {
+            mAudioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, SAMPLE_RATE_INHZ, AudioFormat.CHANNEL_OUT_STEREO, AUDIO_FORMAT,
+                    mBufferSizeInBytes, AudioTrack.MODE_STREAM);
+        }
+        return mAudioTrack;
+    }
+
+    //删除PCM音频文件
+    private void deleFile() {
+        if(file == null){
+            return;
+        }
+        file.delete();
+        Log.d(TAG, "文件删除成功");
+        printLog("文件删除成功");
+    }
+}
